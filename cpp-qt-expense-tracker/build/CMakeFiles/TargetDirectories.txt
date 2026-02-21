@@ -1,0 +1,5 @@
+/Users/fortunatohernandez/Desktop/Master/Masters/Expense-Tracker-Comparison/cpp-qt-expense-tracker/build/CMakeFiles/expense_tracker_gui.dir
+/Users/fortunatohernandez/Desktop/Master/Masters/Expense-Tracker-Comparison/cpp-qt-expense-tracker/build/CMakeFiles/edit_cache.dir
+/Users/fortunatohernandez/Desktop/Master/Masters/Expense-Tracker-Comparison/cpp-qt-expense-tracker/build/CMakeFiles/rebuild_cache.dir
+/Users/fortunatohernandez/Desktop/Master/Masters/Expense-Tracker-Comparison/cpp-qt-expense-tracker/build/CMakeFiles/expense_tracker_gui_autogen_timestamp_deps.dir
+/Users/fortunatohernandez/Desktop/Master/Masters/Expense-Tracker-Comparison/cpp-qt-expense-tracker/build/CMakeFiles/expense_tracker_gui_autogen.dir

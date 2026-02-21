@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
-"""Console-based expense tracker with JSON persistence."""
+"""Console-based expense tracker backed by a shared SQLite database."""
 
 from __future__ import annotations
 
-import json
+import sqlite3
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
 
-DATA_FILE = Path(__file__).with_name("expenses.json")
+DB_PATH = Path(__file__).resolve().parent.parent / "expenses.db"
 
 
 def parse_date(date_str: str) -> date | None:
@@ -19,13 +18,29 @@ def parse_date(date_str: str) -> date | None:
         return None
 
 
-def prompt_date(prompt: str) -> date:
-    """Prompt until a valid date is entered."""
+def initialize_database(connection: sqlite3.Connection) -> None:
+    """Create the shared expenses table if it doesn't exist."""
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            amount REAL NOT NULL,
+            category TEXT NOT NULL,
+            description TEXT
+        )
+        """
+    )
+    connection.commit()
+
+
+def prompt_date(prompt: str) -> str:
+    """Prompt until a valid date is entered. Returns ISO string YYYY-MM-DD."""
     while True:
         raw = input(prompt).strip()
         parsed = parse_date(raw)
         if parsed is not None:
-            return parsed
+            return parsed.isoformat()
         print("Invalid date format. Please use YYYY-MM-DD.")
 
 
@@ -51,60 +66,7 @@ def prompt_non_empty(prompt: str) -> str:
         print("Category cannot be empty.")
 
 
-def load_expenses() -> list[dict[str, Any]]:
-    """Load expenses from JSON if available."""
-    if not DATA_FILE.exists():
-        return []
-
-    try:
-        with DATA_FILE.open("r", encoding="utf-8") as file:
-            raw_data = json.load(file)
-    except (json.JSONDecodeError, OSError):
-        print("Warning: Could not read expenses.json. Starting with an empty list.")
-        return []
-
-    expenses: list[dict[str, Any]] = []
-    for item in raw_data if isinstance(raw_data, list) else []:
-        if not isinstance(item, dict):
-            continue
-        parsed_date = parse_date(str(item.get("date", "")))
-        try:
-            amount = float(item.get("amount", 0))
-        except (TypeError, ValueError):
-            continue
-        category = str(item.get("category", "")).strip()
-        description = str(item.get("description", "")).strip()
-
-        if parsed_date and amount > 0 and category:
-            expenses.append(
-                {
-                    "date": parsed_date,
-                    "amount": amount,
-                    "category": category,
-                    "description": description,
-                }
-            )
-
-    return expenses
-
-
-def save_expenses(expenses: list[dict[str, Any]]) -> None:
-    """Persist expenses to JSON."""
-    serializable = [
-        {
-            "date": entry["date"].isoformat(),
-            "amount": entry["amount"],
-            "category": entry["category"],
-            "description": entry["description"],
-        }
-        for entry in expenses
-    ]
-
-    with DATA_FILE.open("w", encoding="utf-8") as file:
-        json.dump(serializable, file, indent=2)
-
-
-def print_table(expenses: list[dict[str, Any]]) -> None:
+def print_table(expenses: list[sqlite3.Row]) -> None:
     """Print expenses in tabular format."""
     if not expenses:
         print("No expenses to display.")
@@ -115,14 +77,14 @@ def print_table(expenses: list[dict[str, Any]]) -> None:
     print("-" * len(header))
     for item in expenses:
         print(
-            f"{item['date'].isoformat():<12} | "
-            f"{item['amount']:>10.2f} | "
+            f"{item['date']:<12} | "
+            f"{float(item['amount']):>10.2f} | "
             f"{item['category']:<20} | "
-            f"{item['description']}"
+            f"{item['description'] or ''}"
         )
 
 
-def add_expense(expenses: list[dict[str, Any]]) -> None:
+def add_expense(connection: sqlite3.Connection) -> None:
     """Collect and add a new expense."""
     print("\nAdd New Expense")
     expense_date = prompt_date("Date (YYYY-MM-DD): ")
@@ -130,36 +92,40 @@ def add_expense(expenses: list[dict[str, Any]]) -> None:
     category = prompt_non_empty("Category: ")
     description = input("Description: ").strip()
 
-    expenses.append(
-        {
-            "date": expense_date,
-            "amount": amount,
-            "category": category,
-            "description": description,
-        }
+    connection.execute(
+        "INSERT INTO expenses (date, amount, category, description) VALUES (?, ?, ?, ?)",
+        (expense_date, amount, category, description),
     )
-    save_expenses(expenses)
+    connection.commit()
     print("Expense added successfully.")
 
 
-def view_expenses(expenses: list[dict[str, Any]]) -> None:
+def view_expenses(connection: sqlite3.Connection) -> None:
     """View all expenses sorted by date ascending."""
     print("\nAll Expenses (sorted by date)")
-    sorted_expenses = sorted(expenses, key=lambda item: item["date"])
-    print_table(sorted_expenses)
+    rows = connection.execute(
+        "SELECT id, date, amount, category, description FROM expenses ORDER BY date ASC, id ASC"
+    ).fetchall()
+    print_table(rows)
 
 
-def filter_by_category(expenses: list[dict[str, Any]]) -> None:
+def filter_by_category(connection: sqlite3.Connection) -> None:
     """Filter expenses by category, case-insensitive."""
     print("\nFilter by Category")
     category = prompt_non_empty("Category to filter: ")
-    filtered = [
-        item for item in expenses if item["category"].strip().lower() == category.lower()
-    ]
-    print_table(sorted(filtered, key=lambda item: item["date"]))
+    rows = connection.execute(
+        """
+        SELECT id, date, amount, category, description
+        FROM expenses
+        WHERE LOWER(category) = LOWER(?)
+        ORDER BY date ASC, id ASC
+        """,
+        (category,),
+    ).fetchall()
+    print_table(rows)
 
 
-def filter_by_date_range(expenses: list[dict[str, Any]]) -> None:
+def filter_by_date_range(connection: sqlite3.Connection) -> None:
     """Filter expenses by inclusive date range."""
     print("\nFilter by Date Range")
     while True:
@@ -169,66 +135,87 @@ def filter_by_date_range(expenses: list[dict[str, Any]]) -> None:
             break
         print("Start date cannot be after end date. Please re-enter.")
 
-    filtered = [item for item in expenses if start <= item["date"] <= end]
-    print_table(sorted(filtered, key=lambda item: item["date"]))
+    rows = connection.execute(
+        """
+        SELECT id, date, amount, category, description
+        FROM expenses
+        WHERE date BETWEEN ? AND ?
+        ORDER BY date ASC, id ASC
+        """,
+        (start, end),
+    ).fetchall()
+    print_table(rows)
 
 
-def calculate_totals(expenses: list[dict[str, Any]]) -> None:
+def calculate_totals(connection: sqlite3.Connection) -> None:
     """Calculate and display overall and per-category totals."""
     print("\nTotals")
-    overall = sum(item["amount"] for item in expenses)
-    by_category: dict[str, float] = {}
-    for item in expenses:
-        category = item["category"]
-        by_category[category] = by_category.get(category, 0.0) + item["amount"]
-
+    overall_row = connection.execute(
+        "SELECT COALESCE(SUM(amount), 0) AS total FROM expenses"
+    ).fetchone()
+    overall = float(overall_row["total"] if overall_row else 0.0)
     print(f"Overall total: {overall:.2f}")
-    if not by_category:
+
+    category_rows = connection.execute(
+        """
+        SELECT category, SUM(amount) AS total
+        FROM expenses
+        GROUP BY category
+        ORDER BY category ASC
+        """
+    ).fetchall()
+
+    if not category_rows:
         print("No category totals available.")
         return
 
     print("Totals by category:")
-    for category in sorted(by_category):
-        print(f"- {category}: {by_category[category]:.2f}")
+    for row in category_rows:
+        print(f"- {row['category']}: {float(row['total']):.2f}")
 
 
 def main() -> None:
     """Run the expense tracker menu loop."""
-    expenses = load_expenses()
+    connection = sqlite3.connect(DB_PATH)
+    connection.row_factory = sqlite3.Row
 
-    menu = (
-        "\nExpense Tracker Menu\n"
-        "1) Add new expense\n"
-        "2) View all expenses (sorted by date ascending)\n"
-        "3) Filter expenses by category\n"
-        "4) Filter expenses by date range\n"
-        "5) Calculate totals (overall and by category)\n"
-        "6) Exit"
-    )
+    try:
+        initialize_database(connection)
 
-    actions = {
-        "1": add_expense,
-        "2": view_expenses,
-        "3": filter_by_category,
-        "4": filter_by_date_range,
-        "5": calculate_totals,
-    }
+        menu = (
+            "\nExpense Tracker Menu\n"
+            "1) Add new expense\n"
+            "2) View all expenses (sorted by date ascending)\n"
+            "3) Filter expenses by category\n"
+            "4) Filter expenses by date range\n"
+            "5) Calculate totals (overall and by category)\n"
+            "6) Exit"
+        )
 
-    while True:
-        print(menu)
-        choice = input("Choose an option (1-6): ").strip()
+        actions = {
+            "1": add_expense,
+            "2": view_expenses,
+            "3": filter_by_category,
+            "4": filter_by_date_range,
+            "5": calculate_totals,
+        }
 
-        if choice == "6":
-            save_expenses(expenses)
-            print("Goodbye!")
-            break
+        while True:
+            print(menu)
+            choice = input("Choose an option (1-6): ").strip()
 
-        action = actions.get(choice)
-        if action is None:
-            print("Invalid choice. Please select a menu option from 1 to 6.")
-            continue
+            if choice == "6":
+                print("Goodbye!")
+                break
 
-        action(expenses)
+            action = actions.get(choice)
+            if action is None:
+                print("Invalid choice. Please select a menu option from 1 to 6.")
+                continue
+
+            action(connection)
+    finally:
+        connection.close()
 
 
 if __name__ == "__main__":
