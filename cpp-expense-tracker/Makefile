@@ -1,0 +1,14 @@
+CXX := g++
+CXXFLAGS := -std=c++17 -Wall -Wextra -pedantic -O2
+TARGET := expense_tracker
+SRC := main.cpp
+
+all: $(TARGET)
+
+$(TARGET): $(SRC)
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(SRC)
+
+clean:
+	rm -f $(TARGET)
+
+.PHONY: all clean
